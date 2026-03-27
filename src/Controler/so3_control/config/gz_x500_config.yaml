@@ -1,0 +1,25 @@
+/**:
+  ros__parameters:
+    # Gains for x500 + SO3 controller
+    uav_name: "gz_x500"
+    
+    mass: 2.5382263
+
+    gains/kx/x: 5.0
+    gains/kx/y: 5.0
+    gains/kx/z: 15.0
+
+    gains/kv/x: 5.0
+    gains/kv/y: 5.0
+    gains/kv/z: 5.0
+
+    gains/rot/x: 3.5
+    gains/rot/y: 3.5
+    gains/rot/z: 1.0
+
+    gains/ang/x: 0.4
+    gains/ang/y: 0.4
+    gains/ang/z: 0.1
+
+    kMaxTotalThrust: 34.194320
+

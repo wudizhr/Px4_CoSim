@@ -1,0 +1,27 @@
+/**:
+  ros__parameters:
+    # Trajectory parameters for control terminal
+    sample_hz: 50.0
+    default_tf: 5.0
+
+    trajectory.circle.center: [0.0, 0.0, -2.0]   # [x, y, z]
+    trajectory.circle.radius: 0.6
+    trajectory.circle.linear_vel: 0.3
+    trajectory.circle.direction: 1.0             # >=0 视为 +1(CCW)，<0 视为 -1(CW)
+    trajectory.circle.fixed_yaw: false
+
+    trajectory.figure8.center: [0.0, 0.0, -2.0]   # [x, y, z]
+    trajectory.figure8.amp_x: 1.0
+    trajectory.figure8.amp_y: 0.5
+    trajectory.figure8.linear_vel: 0.3
+    trajectory.figure8.direction: 1.0              # >=0 视为 +1，<0 视为 -1
+    trajectory.figure8.fixed_yaw: false
+    trajectory.figure8.phase: 0.0                  # 相位差 delta (rad)
+    trajectory.figure8.ratio_x: 1                  # 频率比 a
+    trajectory.figure8.ratio_y: 2                  # 频率比 b (1:2 为典型“8”字)
+
+    default_target_z: -1.0
+
+/mocap_to_px4:
+  ros__parameters:
+    mocap_pose_topic: "/vrpn_mocap/zhr/pose"

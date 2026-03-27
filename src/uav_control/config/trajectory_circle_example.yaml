@@ -1,0 +1,27 @@
+# 示例：圆轨迹参数（供 uav_control_terminal 使用）
+# 使用方法：
+#   ros2 run uav_control uav_control_terminal --ros-args --params-file \
+#     /home/zhr/px4_ros2/uav_control/config/trajectory_circle_example.yaml
+#
+# 说明：
+# - 你的节点名是 terminal_node（见 uav_control_terminal.cpp）
+# - 这里同时提供了 terminal_node 作用域与 /** 通配作用域；二选一保留也可以。
+
+terminal_node:
+  ros__parameters:
+    # 用“带点号”的参数名，和代码里的 declare_parameter 名称严格一致
+    trajectory.circle.center: [0.0, 0.0, -2.0]   # [x, y, z]
+    trajectory.circle.radius: 2.0
+    trajectory.circle.linear_vel: 1.0
+    trajectory.circle.direction: 1.0             # >=0 视为 +1(CCW)，<0 视为 -1(CW)
+    trajectory.circle.fixed_yaw: false
+
+/**:
+  ros__parameters:
+    # 通配写法：当你改了节点名/或加了 namespace 时依然能生效。
+    # 如果你同时保留了上面 terminal_node: 的配置，terminal_node 会优先匹配自身那一段。
+    trajectory.circle.center: [0.0, 0.0, -2.0]
+    trajectory.circle.radius: 2.0
+    trajectory.circle.linear_vel: 1.0
+    trajectory.circle.direction: 1.0
+    trajectory.circle.fixed_yaw: false
