@@ -13,6 +13,7 @@ namespace uav_control
         HOVER = 4,        // 悬停（保持当前位置）
         TRAJ = 5,           // 轨迹跟踪
         CHANGECONTROLLER = 6,   // 切换控制器
+        PLANNER = 7,           // 由规划器生成的轨迹跟踪
     };
     enum class TarjKind : int
     {

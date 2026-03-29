@@ -38,6 +38,7 @@
 # Editor / OS artifacts
 # =========================
 .vscode/
+.cache/
 .idea/
 *.swp
 *.swo
@@ -49,3 +50,5 @@
 # =========================
 *.log
 *.tmp
+
+

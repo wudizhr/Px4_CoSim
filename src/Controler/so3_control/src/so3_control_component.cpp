@@ -115,8 +115,6 @@ void SO3ControlComponent::position_cmd_callback(const quadrotor_msgs::msg::Posit
     des_yaw_dot_ = cmd->yaw_dot;
     position_cmd_updated_ = true;
     position_cmd_init_ = true;
-
-    publishSO3Command();
 }
 
 void SO3ControlComponent::odom_callback(const nav_msgs::msg::Odometry::ConstPtr &odom)
@@ -151,24 +149,12 @@ void SO3ControlComponent::odom_callback(const nav_msgs::msg::Odometry::ConstPtr 
     controller_.setPosition(position_ned);
     controller_.setVelocity(velocity_ned);
 
-    if (position_cmd_init_)
+    // Only publish control output after receiving a position_cmd.
+    // Publish on odom to ensure controller uses the latest state.
+    if (position_cmd_updated_)
     {
-        // We set position_cmd_updated_ = false and expect that the
-        // position_cmd_callback would set it to true since typically a position_cmd
-        // message would follow an odom message. If not, the position_cmd_callback
-        // hasn't been called and we publish the so3 command ourselves
-        // TODO: Fallback to hover if position_cmd hasn't been received for some
-        // time
-        if (!position_cmd_updated_)
-            publishSO3Command();
-        position_cmd_updated_ = false;
-    }
-    else if (init_z_ > -9999.0)
-    {
-        des_pos_ = Eigen::Vector3d(init_x_, init_y_, init_z_);
-        des_vel_ = Eigen::Vector3d(0, 0, 0);
-        des_acc_ = Eigen::Vector3d(0, 0, 0);
         publishSO3Command();
+        position_cmd_updated_ = false;
     }
 }
 

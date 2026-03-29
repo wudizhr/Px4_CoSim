@@ -9,6 +9,7 @@
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include "quadrotor_msgs/msg/position_command.hpp"
 #include <quadrotor_msgs/msg/so3_command.hpp>
+#include <std_msgs/msg/empty.hpp>
 
 #include "ros_msg_utils.h"
 #include "sunray_logger.h"
@@ -41,6 +42,7 @@ public:
 		vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
 		SO3_cmd_pub_ = this->create_publisher<quadrotor_msgs::msg::PositionCommand>("/position_cmd", 10);
 		attitude_setpoint_publisher_ = this->create_publisher<VehicleAttitudeSetpoint>("/fmu/in/vehicle_attitude_setpoint", 10);
+		traj_server_reset_pub_ = this->create_publisher<std_msgs::msg::Empty>("/traj_server/reset", 10);
 
 		publish_timer_ = this->create_wall_timer(std::chrono::milliseconds(static_cast<int>(1000/sample_hz)), [this]() {
 			publish_command();
@@ -61,7 +63,10 @@ public:
 			std::bind(&TerminalNode::vehicle_attitude_callback, this, std::placeholders::_1));
 		so3_command_sub_ =	this->create_subscription<quadrotor_msgs::msg::SO3Command>(
 			"so3_cmd", qos,
-			std::bind(&TerminalNode::vehicle_attitude_setpoint_callback, this, std::placeholders::_1));
+			std::bind(&TerminalNode::terminal_so3_cmd_callback, this, std::placeholders::_1));
+		planner_so3_command_sub_ = this->create_subscription<quadrotor_msgs::msg::SO3Command>(
+			"planner_so3_cmd", qos,
+			std::bind(&TerminalNode::planner_so3_cmd_callback, this, std::placeholders::_1));
 		vehicle_status_subscription_ = this->create_subscription<VehicleStatus>(
 			"/fmu/out/vehicle_status_v1", qos,
 			std::bind(&TerminalNode::vehicle_status_callback, this, std::placeholders::_1));
@@ -82,6 +87,7 @@ public:
 				Logger::print_color(int(LogColor::cyan), "  4: hover");
 				Logger::print_color(int(LogColor::cyan), "  5: trajectory");
 				Logger::print_color(int(LogColor::cyan), "  6: change controller");
+				Logger::print_color(int(LogColor::cyan), "  7: ego planner");
 				if (!(cin >> input)) {
 					cin.clear();
 					string dummy; getline(cin, dummy);
@@ -107,18 +113,22 @@ private:
 	void vehicle_local_position_callback(const VehicleLocalPosition::SharedPtr msg);
 	void arm_function();
 	void handle_input_command(int input);
-	void vehicle_attitude_setpoint_callback(const quadrotor_msgs::msg::SO3Command::SharedPtr msg);
+	// 处理 SO3Command 消息
+	void terminal_so3_cmd_callback(const quadrotor_msgs::msg::SO3Command::SharedPtr msg);
+	void planner_so3_cmd_callback(const quadrotor_msgs::msg::SO3Command::SharedPtr msg);
+
 	void publish_attitude_setpoint(px4_msgs::msg::VehicleAttitudeSetpoint att_setpoint);
 	void send_so3_command();
 	void uav_move_control();
 	void vehicle_attitude_callback(const VehicleAttitude::SharedPtr msg);
+	void planner_init();
+	void vehicle_attitude_setpoint(const quadrotor_msgs::msg::SO3Command msg);
 
 private:
 	rclcpp::TimerBase::SharedPtr publish_timer_;
 	CommandState cmd = CommandState::OTHER;
 	TarjKind current_traj = TarjKind::OTHER;
 	ControlerKind current_controller = ControlerKind::PX4;
-	quadrotor_msgs::msg::SO3Command latest_so3_command_;
 
 	int arm_count = 0;
 	int tarj_count = 0;
@@ -126,6 +136,8 @@ private:
 
 	bool is_land = true;
 	bool is_armed = false;
+	bool is_first_planner_command = false;
+
 	double target_x = 0.0;
 	double target_y = 0.0;
 	double target_z = 0.0;
@@ -152,14 +164,29 @@ private:
 	rclcpp::Subscription<VehicleStatus>::SharedPtr vehicle_status_subscription_;
 	rclcpp::Subscription<VehicleLocalPosition>::SharedPtr vehicle_local_position_subscription_;
 	rclcpp::Subscription<quadrotor_msgs::msg::SO3Command>::SharedPtr so3_command_sub_;
+	rclcpp::Subscription<quadrotor_msgs::msg::SO3Command>::SharedPtr planner_so3_command_sub_;
 
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
 	rclcpp::Publisher<quadrotor_msgs::msg::PositionCommand>::SharedPtr SO3_cmd_pub_;
+	rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr traj_server_reset_pub_;
+
 	rclcpp::Publisher<VehicleAttitudeSetpoint>::SharedPtr attitude_setpoint_publisher_;
 
 };
+
+void TerminalNode::planner_init()
+{
+	hover(); // 先悬停
+	if (traj_server_reset_pub_)
+	{
+		traj_server_reset_pub_->publish(std_msgs::msg::Empty());
+	}
+	is_first_planner_command = false;
+	cmd = CommandState::OTHER; // 重置命令状态
+	Logger::print_color(int(LogColor::yellow), "Exiting planner mode and hovering...");
+}
 
 void TerminalNode::vehicle_attitude_callback(const VehicleAttitude::SharedPtr msg)
 {
@@ -209,35 +236,55 @@ void TerminalNode::publish_attitude_setpoint(px4_msgs::msg::VehicleAttitudeSetpo
 	attitude_setpoint_publisher_->publish(att_setpoint);
 }
 
-void TerminalNode::vehicle_attitude_setpoint_callback(const quadrotor_msgs::msg::SO3Command::SharedPtr msg)
+void TerminalNode::vehicle_attitude_setpoint(const quadrotor_msgs::msg::SO3Command msg)
 {
-	latest_so3_command_ = *msg;
-	if (current_controller == ControlerKind::SO3 && (cmd == CommandState::GO_TO_WAYPOINT || cmd == CommandState::TRAJ)) // 仅在使用 SO3 控制器且处于飞行状态时才发布姿态控制命令
+	VehicleAttitudeSetpoint att_setpoint{};
+	// 直接使用 SO3Command 的姿态与推力（不做任何坐标系转换）
+	const Eigen::Quaterniond q(
+		msg.orientation.w,
+		msg.orientation.x,
+		msg.orientation.y,
+		msg.orientation.z);
+	att_setpoint.q_d[0] = static_cast<float>(q.w()); // w
+	att_setpoint.q_d[1] = static_cast<float>(q.x()); // x
+	att_setpoint.q_d[2] = static_cast<float>(q.y()); // y
+	att_setpoint.q_d[3] = static_cast<float>(q.z()); // z
+
+	const Eigen::Vector3d force(msg.force.x, msg.force.y, msg.force.z);
+	const Eigen::Vector3d thrust_body_frd = q.conjugate() * force; // 将力从世界坐标系转换到机体坐标系（FRD）
+	const double thrust_body_frd_z = thrust_body_frd.z();
+	const double thrust_body_frd_z_norm = std::min(0.0, std::max(thrust_body_frd_z / kMaxTotalThrust, -0.95));
+
+	// 推力施加在机体 Z 轴方向（FRD 坐标系），正值表示向下推力
+	att_setpoint.thrust_body[0] = 0.0f; // X 轴推力为 0（不控制）
+	att_setpoint.thrust_body[1] = 0.0f; // Y 轴推力为 0（不控制）
+	att_setpoint.thrust_body[2] = static_cast<float>(thrust_body_frd_z_norm);	
+
+	publish_offboard_control_mode();
+	publish_attitude_setpoint(att_setpoint);	
+}
+
+void TerminalNode::terminal_so3_cmd_callback(const quadrotor_msgs::msg::SO3Command::SharedPtr msg)
+{
+	if (current_controller == ControlerKind::SO3 && (cmd == CommandState::GO_TO_WAYPOINT || cmd == CommandState::TRAJ || (cmd == CommandState::PLANNER && !is_first_planner_command))) // 仅在使用 SO3 控制器且处于飞行状态时才发布姿态控制命令
 	{
-		VehicleAttitudeSetpoint att_setpoint{};
-		// 直接使用 SO3Command 的姿态与推力（不做任何坐标系转换）
-		const Eigen::Quaterniond q(
-			latest_so3_command_.orientation.w,
-			latest_so3_command_.orientation.x,
-			latest_so3_command_.orientation.y,
-			latest_so3_command_.orientation.z);
-		att_setpoint.q_d[0] = static_cast<float>(q.w()); // w
-		att_setpoint.q_d[1] = static_cast<float>(q.x()); // x
-		att_setpoint.q_d[2] = static_cast<float>(q.y()); // y
-		att_setpoint.q_d[3] = static_cast<float>(q.z()); // z
+		vehicle_attitude_setpoint(*msg);
+	}
+}
 
-		const Eigen::Vector3d force(latest_so3_command_.force.x, latest_so3_command_.force.y, latest_so3_command_.force.z);
-		const Eigen::Vector3d thrust_body_frd = q.conjugate() * force; // 将力从世界坐标系转换到机体坐标系（FRD）
-		const double thrust_body_frd_z = thrust_body_frd.z();
-		const double thrust_body_frd_z_norm = std::min(0.0, std::max(thrust_body_frd_z / kMaxTotalThrust, -0.95));
-
-		// 推力施加在机体 Z 轴方向（FRD 坐标系），正值表示向下推力
-		att_setpoint.thrust_body[0] = 0.0f; // X 轴推力为 0（不控制）
-		att_setpoint.thrust_body[1] = 0.0f; // Y 轴推力为 0（不控制）
-		att_setpoint.thrust_body[2] = static_cast<float>(thrust_body_frd_z_norm);	
-
-		publish_offboard_control_mode();
-		publish_attitude_setpoint(att_setpoint);
+void TerminalNode::planner_so3_cmd_callback(const quadrotor_msgs::msg::SO3Command::SharedPtr msg)
+{
+	if (current_controller == ControlerKind::SO3 && cmd == CommandState::PLANNER) //	仅在使用 SO3 控制器且处于规划状态时才发布姿态控制命令
+	{
+		if(is_first_planner_command)
+		{
+			vehicle_attitude_setpoint(*msg);
+		}
+		 else
+		{
+			Logger::print_color(int(LogColor::yellow), "Received first planner command, initializing trajectory generator...");
+			is_first_planner_command = true;
+		}
 	}
 }
 
@@ -335,6 +382,7 @@ void TerminalNode::handle_input_command(int input)
 		}
 		Logger::print_color(int(LogColor::yellow),"Setting hover at current position...");
 		hover();
+		cmd = CommandState::GO_TO_WAYPOINT; // Reuse GO_TO_WAYPOINT command to trigger hover at current position
 		break;
 	case CommandState::TAKEOFF:
 		Logger::print_color(int(LogColor::yellow),"Command: TAKEOFF");
@@ -469,45 +517,20 @@ void TerminalNode::handle_input_command(int input)
 			Logger::warning("Unknown controller type: ", controller_input);
 		}
 		break;
+	case CommandState::PLANNER:
+		Logger::print_color(int(LogColor::yellow),"Command: EGO_PLANNER");
+		if(current_controller != ControlerKind::SO3)
+		{
+			Logger::print_color(int(LogColor::red), "Ego planner requires SO3 controller! Please switch to SO3 controller first.");
+			return;
+		}
+		planner_init();
+		cmd = CommandState::PLANNER;
+		break;
 	default:
 		Logger::warning("Unknown command: ", input);
 		break;
 	}
-}
-
-void TerminalNode::hover()
-{
-	target_x = vehicle_local_position_.x;
-	target_y = vehicle_local_position_.y;
-	target_z = vehicle_local_position_.z;
-	target_ax = 0.0;
-	target_ay = 0.0;
-	target_az = 0.0;
-	target_vx = 0.0;
-	target_vy = 0.0;
-	target_vz = 0.0;
-	cmd = CommandState::GO_TO_WAYPOINT; // Reuse GO_TO_WAYPOINT command to trigger hover at current position
-}
-
-void TerminalNode::keep_armed()
-{
-	// 发送一个小的 offboard 控制命令来保持解锁状态
-	publish_offboard_control_mode();
-	TrajectorySetpoint msg{};
-	msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-	trajectory_setpoint_publisher_->publish(msg); 
-}
-
-void TerminalNode::vehicle_local_position_callback(const VehicleLocalPosition::SharedPtr msg)
-{
-	vehicle_local_position_ = *msg;
-	has_local_position_ = true;
-}
-
-void TerminalNode::send_land_command()
-{
-	publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
-	Logger::print_color(int(LogColor::magenta), "Land command sent!");
 }
 
 void TerminalNode::publish_command()
@@ -580,9 +603,49 @@ void TerminalNode::publish_command()
 			}
 			uav_move_control();
 			break;
+		case CommandState::PLANNER:
+			if (!is_first_planner_command) {
+				hover(); // 在接收到第一个规划命令之前先悬停
+				uav_move_control();
+			}
+			break;
 		default:
 			break;
 	}
+}
+
+void TerminalNode::hover()
+{
+	target_x = vehicle_local_position_.x;
+	target_y = vehicle_local_position_.y;
+	target_z = vehicle_local_position_.z;
+	target_ax = 0.0;
+	target_ay = 0.0;
+	target_az = 0.0;
+	target_vx = 0.0;
+	target_vy = 0.0;
+	target_vz = 0.0;
+}
+
+void TerminalNode::keep_armed()
+{
+	// 发送一个小的 offboard 控制命令来保持解锁状态
+	publish_offboard_control_mode();
+	TrajectorySetpoint msg{};
+	msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+	trajectory_setpoint_publisher_->publish(msg); 
+}
+
+void TerminalNode::vehicle_local_position_callback(const VehicleLocalPosition::SharedPtr msg)
+{
+	vehicle_local_position_ = *msg;
+	has_local_position_ = true;
+}
+
+void TerminalNode::send_land_command()
+{
+	publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+	Logger::print_color(int(LogColor::magenta), "Land command sent!");
 }
 
 /**

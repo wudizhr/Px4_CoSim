@@ -53,6 +53,28 @@ def generate_launch_description():
             output='screen'
         )
     
+    planner_so3_control_component = launch_ros.descriptions.ComposableNode(
+            package='so3_control', 
+            plugin='SO3ControlComponent',
+            name='so3_control_component',
+            parameters=[so3_config_file],
+            remappings=[
+                ('/so3_cmd', '/planner_so3_cmd'),
+                ('position_cmd', '/planner_position_cmd')
+            ],
+        )
+    
+    planner_so3_control_container = ComposableNodeContainer(
+            name='planner_so3_control_container',
+            namespace='',
+            package='rclcpp_components',
+            executable='component_container',
+            composable_node_descriptions=[
+                planner_so3_control_component
+            ],
+            output='screen'
+        )
+    
     terminal_config_file = os.path.join(
         get_package_share_directory('uav_control'),
         'config',
@@ -72,6 +94,7 @@ def generate_launch_description():
     ld = LaunchDescription()
     ld.add_action(px4_msg_bridge)
     ld.add_action(so3_control_container)
+    ld.add_action(planner_so3_control_container)
     ld.add_action(uav_control_terminal)
 
     return ld

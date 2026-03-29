@@ -8,6 +8,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <quadrotor_msgs/msg/position_command.hpp>
+#include <std_msgs/msg/color_rgba.hpp>
 #include <cmath>
 
 class OdomVisualizationNode : public rclcpp::Node
@@ -26,6 +27,7 @@ public:
         this->declare_parameter("drone_id", 0);
         this->declare_parameter("quadrotor_name", "quadrotor");
         this->declare_parameter("is_frd", false);
+        this->declare_parameter("trajectory_window_size", 300);
 
         // Get parameters
         mesh_resource_ = this->get_parameter("mesh_resource").as_string();
@@ -38,6 +40,11 @@ public:
         drone_id_ = this->get_parameter("drone_id").as_int();
         quad_name_ = this->get_parameter("quadrotor_name").as_string();
         is_frd_ = this->get_parameter("is_frd").as_bool();
+        trajectory_window_size_ = static_cast<size_t>(
+            this->get_parameter("trajectory_window_size").as_int());
+        if (trajectory_window_size_ == 0) {
+            trajectory_window_size_ = 1;
+        }
 
         // Publishers
         mesh_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("robot", 10);
@@ -58,6 +65,15 @@ public:
 
         // Initialize path
         path_.header.frame_id = frame_id_;
+
+        // Initialize trajectory marker for fixed-size sliding window publishing
+        traj_marker_.header.frame_id = frame_id_;
+        traj_marker_.ns = "trajectory";
+        traj_marker_.id = drone_id_;
+        traj_marker_.type = visualization_msgs::msg::Marker::LINE_LIST;
+        traj_marker_.action = visualization_msgs::msg::Marker::ADD;
+        traj_marker_.pose.orientation.w = 1.0;
+        traj_marker_.scale.x = 0.05;
         
         RCLCPP_INFO(this->get_logger(), "Odom visualization node started for drone %d", drone_id_);
     }
@@ -162,51 +178,39 @@ private:
 
     void publish_trajectory(const nav_msgs::msg::Odometry & msg)
     {
-        static geometry_msgs::msg::Point last_point;
-        static bool first_point = true;
-        
-        if (first_point) {
-            last_point.x = msg.pose.pose.position.x;
-            last_point.y = msg.pose.pose.position.y;
-            last_point.z = msg.pose.pose.position.z;
-            first_point = false;
-            return;
-        }
-
-        visualization_msgs::msg::Marker traj;
-        traj.header.frame_id = frame_id_;
-        traj.header.stamp = msg.header.stamp;
-        traj.ns = "trajectory";
-        traj.id = drone_id_;
-        traj.type = visualization_msgs::msg::Marker::LINE_LIST;
-        traj.action = visualization_msgs::msg::Marker::ADD;
-        
-        traj.pose.orientation.w = 1.0;
-        traj.scale.x = 0.05;  // Line width
-        
-        traj.color.r = 0.0;
-        traj.color.g = 1.0;
-        traj.color.b = 0.0;
-        traj.color.a = 0.8;
-        
-        // Add line from last point to current point
-        traj.points.push_back(last_point);
-        
         geometry_msgs::msg::Point current_point;
         current_point.x = msg.pose.pose.position.x;
         current_point.y = msg.pose.pose.position.y;
         current_point.z = msg.pose.pose.position.z;
-        traj.points.push_back(current_point);
-        
-        // Add colors for each point
+
+        if (!has_last_traj_point_) {
+            last_traj_point_ = current_point;
+            has_last_traj_point_ = true;
+            return;
+        }
+
+        // Add a new segment [last_point, current_point]
+        traj_marker_.header.stamp = msg.header.stamp;
+        traj_marker_.points.push_back(last_traj_point_);
+        traj_marker_.points.push_back(current_point);
+
         std_msgs::msg::ColorRGBA color;
         color.r = 0.0; color.g = 1.0; color.b = 0.0; color.a = 0.8;
-        traj.colors.push_back(color);
-        traj.colors.push_back(color);
-        
-        traj_pub_->publish(traj);
-        
-        last_point = current_point;
+        traj_marker_.colors.push_back(color);
+        traj_marker_.colors.push_back(color);
+
+        // Keep only the latest fixed-size window of segments.
+        // One segment in LINE_LIST uses 2 points and 2 colors.
+        const size_t max_points = trajectory_window_size_ * 2;
+        while (traj_marker_.points.size() > max_points) {
+            traj_marker_.points.erase(traj_marker_.points.begin(), traj_marker_.points.begin() + 2);
+            if (traj_marker_.colors.size() >= 2) {
+                traj_marker_.colors.erase(traj_marker_.colors.begin(), traj_marker_.colors.begin() + 2);
+            }
+        }
+
+        traj_pub_->publish(traj_marker_);
+        last_traj_point_ = current_point;
     }
 
     void publish_tf(const nav_msgs::msg::Odometry & msg)
@@ -232,8 +236,12 @@ private:
     int drone_id_;
     std::string quad_name_;
     bool is_frd_ = false;
+    size_t trajectory_window_size_ = 300;
     
     nav_msgs::msg::Path path_;
+    visualization_msgs::msg::Marker traj_marker_;
+    geometry_msgs::msg::Point last_traj_point_;
+    bool has_last_traj_point_ = false;
     quadrotor_msgs::msg::PositionCommand last_cmd_;
     bool has_cmd_ = false;
 

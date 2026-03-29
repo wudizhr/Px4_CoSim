@@ -258,6 +258,10 @@ private:
         local_map_pcd.header = odom_.header;
         local_map_pcd.header.frame_id = frame_id_;
         pub_cloud_->publish(local_map_pcd);
+        // const auto & stamp = local_map_pcd.header.stamp;
+        // RCLCPP_INFO(this->get_logger(),
+        //         "Published /cloud with stamp %d.%09u, points=%zu",
+        //         stamp.sec, stamp.nanosec, local_map->points.size());
 
         // Transform to sensor frame and publish
         Eigen::Matrix3f rot = q.toRotationMatrix();
