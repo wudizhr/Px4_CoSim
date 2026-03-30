@@ -619,6 +619,7 @@ void TerminalNode::hover()
 	target_x = vehicle_local_position_.x;
 	target_y = vehicle_local_position_.y;
 	target_z = vehicle_local_position_.z;
+	target_yaw = euler_angles_rad_[2];
 	target_ax = 0.0;
 	target_ay = 0.0;
 	target_az = 0.0;
